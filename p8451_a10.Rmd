@@ -1,0 +1,139 @@
+---
+title: "P8451 Machine Learning in Public Health - Assignment 10"
+output: word_document
+date: "2023-4-4"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In preparation for all the analyses below, we will load the following libraries:
+
+```{r}
+library(tidyverse)
+library(caret)
+library(rpart.plot)
+```
+
+# Part 1: Import Data & Exploratory Data Analysis
+
+## 1.1 Load .Rdata & Merge
+
+Below we merge all data into a single data frame.
+
+```{r dataprep}
+#Load data using path of where file is stored
+load("./exposome.RData")
+
+#Merge all data frames into a single data frame.
+studydata <- merge(exposome,phenotype,by="ID") %>% merge(covariates, by="ID")
+
+#Strip off ID Variable
+studydata$ID <- NULL
+```
+
+## 1.2 Exploratory Data Analysis
+
+Next, we will generate some descriptive measures for the following features in the newly merged data frame:
+
+* `hs_asthma`: Doctor diagnosed asthma (ever) at 6-11 years of age (_phenotype_)
+* `hs_popdens_h_Sqrt`: Population density at home (_exposome_)
+* `hs_popdens_s_Sqrt`: Population density at school (_exposome_)
+* `hs_dif_hours_total_None`: Total hours of sleep; mean weekdays and night (_exposome_)
+* `h_NO2_Log`: Concentration of indoor NO2 at home (_exposome_)
+* `h_PM_Log`: Concentration of particulate matter at home (_exposome_)
+
+To do so, we will first generate a data set with only 6 variables mentioned above and convert the `hs_asthma` variable from numeric to a 2-level factor variable. Finally, we will apply the `summary` function to generate descriptive statistics. 
+
+```{r}
+helix_data = studydata %>% 
+  select(hs_asthma, hs_popdens_h_Sqrt, hs_popdens_s_Sqrt, hs_dif_hours_total_None, h_NO2_Log, h_PM_Log) %>% 
+  mutate(hs_asthma = factor(hs_asthma, 
+                             labels = c("Asthma", "No_Asthma")))
+
+skimr::skim(helix_data)
+```
+The newly generated `helix_data` data set contains __`r nrow(helix_data)` rows__ and __`r ncol(helix_data)` columns__ (i.e., features). There are __no missing values__ for any of the 6 features. There are 5 continuous features and 1 binary feature in this data set.
+
+The 1 binary feature in the `helix_data` data set is the `hs_asthma` variable. A total of __1,159__ individuals reported an asthma diagnosis, and __142__ individuals reported no asthma diagnosis. 
+
+Descriptive statistics (i.e., mean, median and range) for the 5 continuous variables in the `helix_data` data set are shown in the table below: 
+
+Variable                 Mean   Median   Range
+------------------------ ------ -------- ----------------
+hs_popdens_h_Sqrt        67.652  67.405  (1.732, 261.500)
+hs_popdens_s_Sqrt        68.10   69.26   (0.00, 210.95)
+hs_dif_hours_total_None  10.296  10.330  (7.901, 12.852) 
+h_NO2_Log                3.833   3.617   (1.573, 7.093)
+h_PM_Log                 2.443   2.304   (1.549, 5.236)
+
+# Part II: Developing Research Question
+
+The following is the research question of interest: 
+
+Can whether a child is doctor-diagnosed with asthma at 6-11 years of age be predicted using population density at home and at school, total hours of sleep (mean weekdays and night), and concentrations of indoor NO2 and particulate matter at home?
+
+# Part III: Implement Pipeline to Address Research Question
+
+## 3.1 Data Preprocessing: Centering and Scaling & Partitioning Data
+
+Below, we center and scale these data. In general, it is always good practice to do so! 
+
+```{r}
+helix_numeric = helix_data %>% 
+  select(where(is.numeric)) 
+
+preprocess_setup <- preProcess(helix_numeric, method = c("center", "scale"))
+transformed.vals = predict(preprocess_setup, helix_numeric)
+```
+
+For the purposes of this analysis, we will partition the data into training and testing using a 70/30 split. This process involves applying the `createDataPartition` function to generate a set of training and testing data with equal proportion of individual with the outcome of interest, i.e., `Diabetes`. The new object `train_index` contains all the indexes of the rows in the original data set contained in the 70% split. The rows indexed to be in the 70% is assigned to a new training data set, and the remaining 30% is assigned to a new testing data set. 
+
+```{r}
+train_index = createDataPartition(helix_data$hs_asthma, p = 0.7, list = FALSE)
+
+helix_train <- helix_data[train_index,]
+helix_test <- helix_data [-train_index,]
+```
+
+## 3.2 Developing the Support Vector Classifier Model 
+
+In the code chunk below, we will use the `trainControl` function to set our validation method. For the purposes of this analysis, we will use the 10-fold cross validation method and will generate predicted probabilities. 
+
+```{r}
+train_control_svm = trainControl(method = "cv", number = 10, classProbs = T)
+```
+
+Next, we will incorporate different values for cost (C) into the model. We will also show information about the final model, and generate the metrics of accuracy from training using the `confusionMatrix` function. 
+
+```{r}
+set.seed(123)
+
+svm_helix = train(hs_asthma ~ ., 
+                  data = helix_train, 
+                  method = "svmLinear", 
+                  trControl = train_control_svm, 
+                  preProcess = c("center", "scale"), 
+                  tuneGrid = expand.grid(C = seq(0.001, 10, length = 30)))
+
+svm_helix$finalModel
+
+confusionMatrix(svm_helix)
+```
+
+Based on the output above, the accuracy of the SVC model is __0.8904__, and the cost value is __0.001__. 
+
+## 3.3 Calculate Final Evaluation Metrics in Test Set with the Optimal Model
+
+We will now apply the SVC model to the testing data set, and generate evaluation metrics using the `confusionMatrix` function. 
+
+```{r}
+set.seed(123)
+
+svm_pred_helix_test = predict(svm_helix, helix_test)
+
+confusionMatrix(svm_pred_helix_test, helix_test$hs_asthma)
+```
+
+The kappa value is __0__, and the Mcnemar's Test p-value is __2.509e-10__. The accuracy level of the SVC model is __0.892__, with a 95% confidence interval of __0.8569 to 0.9211__. The sensitivity of this model is __1.000__ and the specificity of this model is __0.000__. The reported prevalence is __0.892__. 
